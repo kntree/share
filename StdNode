@@ -1,0 +1,855 @@
+<script setup>
+import axios from '@/api/index';
+import { FilterMatchMode } from '@primevue/core';
+import { useToast } from 'primevue/usetoast';
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
+
+const toast = useToast();
+const treeData = ref(null);
+const selectedKeys = ref([]);
+const selectedUpKeys = ref([]);
+const checked = ref(false); // 초기값 필요
+const expandedKeys = ref({});
+const expandedUpKeys = ref({});
+//const expandedKeysRef = ref({});
+
+const objDataTree = ref([]);
+const objDataUpTree = ref([]);
+
+const objDataNode = reactive({});
+
+function setReactiveData(node, obj) {
+    for (const key in node) {
+        obj[key] = node[key] ?? null;
+    }
+}
+
+const loading = ref(false);
+const error = ref('');
+const schSiteCd = ref('');
+
+const objDataList = ref([]);
+const dt = ref(null); // DataTable ref
+const columnCount = ref(10); // 기본값 1
+const selectedObjDataList = ref();
+const totalRecords = ref(0);
+const filteredData = ref([]);
+
+const isAddMode = ref(false);
+const prmtDialog = ref(false);
+const objDataListByNotNode = ref([]);
+const submitted = ref(false);
+const selectedObjDataListByNotNode = ref();
+
+const detailDialog = ref(false);
+const deltDialog = ref(false);
+const chkDeltDialog = ref(false);
+
+const isEditMode = ref(false);
+const hasChild = ref(true);
+
+const filters = ref({
+    global: { value: null, matchMode: FilterMatchMode.CONTAINS }
+});
+
+const filtersAddPrmt = ref({
+    global: { value: null, matchMode: FilterMatchMode.CONTAINS }
+});
+
+onMounted(async () => {
+    await nextTick();
+    const container = dt.value?.$el.querySelector('.p-datatable-table-container');
+    if (container) {
+        container.style.height = '250px';
+        container.style.maxHeight = '250px';
+        container.style.overflow = 'auto';
+    }
+
+    // const headers = dt.value?.$el.querySelectorAll('thead > tr > th');
+    // columnCount.value = headers?.length || 10;
+});
+
+// API
+const fetchTreeList = async (params) => {
+    //console.log('cndParam-->', params);
+    loading.value = true;
+    error.value = '';
+    try {
+        const response = await axios.post('/std/node/inqrTree', params);
+        objDataTree.value = typeof response === 'string' ? JSON.parse(response) : response;
+    } catch (e) {
+        error.value = e.message || '불러오기 실패';
+    } finally {
+        loading.value = false;
+    }
+};
+
+const fetchNodeData = async (key) => {
+    loading.value = true;
+    error.value = '';
+    try {
+        const response = await axios.post('/std/node/inqrDetl', { rowKey: key });
+        objDataNode.value = response;
+        setReactiveData(response, objDataNode);
+    } catch (err) {
+        console.error('상세조회 실패:', err);
+        error.value = err.message || '조회 중 오류 발생';
+    } finally {
+        loading.value = false;
+    }
+};
+
+const fetchPrmtList = async (key) => {
+    const params = {
+        siteCd: schSiteCd.value,
+        nodeId: key
+    };
+    //console.log('cndParam-->', params);
+    loading.value = true;
+    error.value = '';
+    try {
+        const [list, cnt] = await Promise.all([
+            axios.post('/std/nodePrmtCnnc/inqrList', params),
+            //cmmnApi.inqrList("/std/prmt/inqrPage", params),
+            100 //axios.get('/std/prmt/count')
+        ]);
+        objDataList.value = Array.isArray(list) ? list : [];
+        //console.log('val=', objDataList.value);
+        total.value = Number(cnt) || items.value.length;
+    } catch (e) {
+        error.value = e.message || '불러오기 실패';
+    } finally {
+        loading.value = false;
+    }
+};
+
+const fetchPrmtListNotNode = async (key) => {
+    const params = {
+        siteCd: schSiteCd.value,
+        nodeId: key
+    };
+    loading.value = true;
+    error.value = '';
+    try {
+        const [list, cnt] = await Promise.all([
+            axios.post('/std/nodePrmtCnnc/inqrListByNotNode', params),
+            //cmmnApi.inqrList("/std/prmt/inqrPage", params),
+            100 //axios.get('/std/prmt/count')
+        ]);
+        objDataListByNotNode.value = Array.isArray(list) ? list : [];
+        total.value = Number(cnt) || items.value.length;
+    } catch (e) {
+        error.value = e.message || '불러오기 실패';
+    } finally {
+        loading.value = false;
+    }
+};
+
+// 단일 선택 key 계산
+const selectedKey = computed(() => {
+    return Object.keys(selectedKeys.value).find((k) => selectedKeys.value[k]) || null;
+    //return Object.keys(selectedKeys.value).filter((k) => selectedKeys.value[k]) || []; //멀티(multiful)
+});
+
+const selectedUpKey = computed(() => {
+    return Object.keys(selectedUpKeys.value).find((k) => selectedUpKeys.value[k]) || null;
+});
+
+const findNodeByKey = (nodes, key) => {
+    for (const node of nodes) {
+        if (node.key === key) {
+            // children 제거한 shallow copy 반환
+            const { children, ...selfOnly } = node;
+            return selfOnly;
+        }
+        if (node.children?.length) {
+            const found = findNodeByKey(node.children, key);
+            if (found) return found;
+        }
+    }
+    return null;
+};
+
+const findNodeByKeyAll = (nodes, key) => {
+    for (const node of nodes) {
+        if (node.key === key) return node;
+        if (node.children?.length) {
+            const found = findNodeByKey(node.children, key);
+            if (found) return found;
+        }
+    }
+    return null;
+};
+
+// const selectedNode = computed(() => {
+//     const key = selectedKey.value;
+//     //return key ? findNodeByKey(objDataTree.value, key) : null;
+//     alert(key);
+//     return key;
+// });
+
+const expandAllTree = () => {
+    for (let node of objDataTree.value) {
+        //console.log('node...', node.data.nodeLevl);
+        expandNode(node);
+    }
+
+    expandedKeys.value = { ...expandedKeys.value };
+};
+
+const collapseAllTree = () => {
+    expandedKeys.value = {};
+};
+
+const expandAllUpTree = () => {
+    for (let node of objDataUpTree.value) {
+        expandNodeUp(node);
+    }
+
+    expandedUpKeys.value = { ...expandedUpKeys.value };
+};
+
+const collapseAllUpTree = () => {
+    expandedUpKeys.value = {};
+};
+
+const expandNode = (node) => {
+    if (node.children && node.children.length && node.data.nodeLevl < 5) {
+        expandedKeys.value[node.key] = true;
+        for (let child of node.children) {
+            expandNode(child);
+        }
+    }
+};
+
+const expandNodeUp = (node) => {
+    if (node.children && node.children.length && node.data.nodeLevl < 5) {
+        expandedUpKeys.value[node.key] = true;
+
+        for (let child of node.children) {
+            expandNodeUp(child);
+        }
+    }
+};
+
+// 모든 키를 자동으로 초기화
+const clearObjData = (objData) => {
+    if (!objData.value) return;
+    for (const key in objData) {
+        objData[key] = null;
+    }
+};
+watch(schSiteCd, (newVal) => {
+    if (newVal) {
+        const params = {
+            siteCd: newVal,
+            nodeUpId: '0'
+        };
+        fetchTreeList(params);
+    }
+});
+
+watch(selectedKey, async (key) => {
+    if (!key) {
+        // 선택된 key가 없으면 상세 데이터 비우기
+        clearObjData(objDataNode); // 모든 필드 자동 초기화
+        //objDataNode.value = {};
+        objDataList.value = []; // 모든 필드 자동 초기화
+        isEditMode.value = false;
+        hasChild.value = false;
+        return;
+    }
+    hasChild.value = hasChildren(objDataTree.value, key);
+    console.log(`선택된 노드(${key})는 자식이 ${hasChild.value ? '있습니다' : '없습니다'}.`);
+    isEditMode.value = true;
+    // key가 있으면 상세 조회 API 호출
+    await fetchNodeData(key);
+    await fetchPrmtList(key);
+});
+
+watch(isAddMode, async (key) => {
+    if (!key) {
+        //console.log(isAddMode, selectedKey);
+        return;
+    }
+    // key가 있으면 상세 조회 API 호출
+    fetchPrmtListNotNode(selectedKey);
+});
+
+watch(
+    objDataList,
+    (newList) => {
+        totalRecords.value = newList.length;
+    },
+    { immediate: true }
+);
+
+function hasChildren(treeData, key) {
+    const findNode = (nodes) => {
+        for (const node of nodes) {
+            if (node.key === key) return node;
+            if (node.children?.length) {
+                const found = findNode(node.children);
+                if (found) return found;
+            }
+        }
+        return null;
+    };
+
+    const node = findNode(treeData);
+    return node?.children?.length > 0;
+}
+
+function chkAddPrmtDataList() {
+    const payload = {
+        siteCd: selectedObjDataListByNotNode.value[0].siteCd,
+        nodeId: selectedKey.value,
+        rowKeys: selectedObjDataListByNotNode.value.map((item) => item.rowKey)
+    };
+    //console.log('rowKeys', JSON.stringify(payload.rowKeys.value, null, 2));
+    objDataListByNotNode.value = objDataListByNotNode.value.filter((item) => !payload.rowKeys.includes(item.rowKey));
+
+    chkAddPrmt(payload);
+
+    selectedObjDataListByNotNode.value = []; // ✅ null 대신 빈 배열로 초기화
+
+    toast.add({ severity: 'success', summary: 'Successful', detail: 'Node Param Data Insert', life: 3000 });
+}
+
+//삭제
+const chkAddPrmt = async (payload) => {
+    await axios.put('/std/nodePrmtCnnc/rgstList', payload);
+    //await cmmnApi.delt('/std/prmt/delt', payload);
+    await fetchPrmtList(selectedKey.value);
+};
+
+function openAdd() {
+    isAddMode.value = false;
+    //objData.value = {};
+    //submitted.value = false;
+    prmtDialog.value = true;
+    fetchPrmtListNotNode(selectedKey.value);
+}
+
+function hidePrmtAddDialog() {
+    prmtDialog.value = false;
+    submitted.value = false;
+}
+
+function hideTreeDialog() {
+    treeDialog.value = false;
+}
+
+function confirmDeleteSelected() {
+    chkDeltDialog.value = true;
+}
+
+function chkDeltObjDataList() {
+    const payload = {
+        siteCd: selectedObjDataList.value[0].siteCd,
+        nodeId: selectedKey.value,
+        rowKeys: selectedObjDataList.value.map((item) => item.rowKey)
+    };
+
+    objDataList.value = objDataList.value.filter((item) => !payload.rowKeys.includes(item.rowKey));
+
+    chkDelt(payload);
+
+    chkDeltDialog.value = false;
+    selectedObjDataList.value = []; // ✅ null 대신 빈 배열로 초기화
+
+    toast.add({ severity: 'success', summary: 'Successful', detail: 'Datas Deleted', life: 3000 });
+}
+
+//삭제
+const chkDelt = async (payload) => {
+    await axios.delete('/std/nodePrmtCnnc/deltList', { data: payload });
+    await fetchPrmtList(selectedKey.value);
+};
+
+const treeDialog = ref(false);
+
+function openTree() {
+    treeDialog.value = true;
+    objDataUpTree.value = objDataTree.value;
+}
+
+function confirmUpNode() {
+    if (selectedUpKey?.value?.trim()) {
+        objDataNode.nodeUpId = selectedUpKey.value;
+        treeDialog.value = false;
+        selectedUpKey.value = null;
+    }
+}
+
+function saveObjDataNode() {
+    submitted.value = true;
+    console.log('objDataNode==>', JSON.stringify(objDataNode, null, 2));
+
+    if (objDataNode?.siteCd?.trim() && objDataNode?.nodeNm?.trim() && objDataNode?.nodeKind?.trim() && objDataNode?.nodeCls?.trim() && objDataNode?.nodeTy?.trim()) {
+        //console.log("objData",JSON.stringify(objData.value, null, 2))
+        //showAlert(objData.value);
+        if (confirm('저장 하시겠습니까?')) {
+            if (objDataNode.rowKey) {
+                //수정
+                console.log('Updated');
+                toast.add({ severity: 'success', summary: 'Successful', detail: 'Updated', life: 3000 });
+            } else {
+                console.log('Created');
+                toast.add({ severity: 'success', summary: 'Successful', detail: 'Created', life: 3000 });
+            }
+            saveNode(objDataNode);
+        }
+    }
+}
+
+const saveNode = async (payload) => {
+    console.log('save');
+    await axios.put('/std/node/save', payload);
+    //await cmmnApi.save('/std/prmt/save', payload);
+
+    //조명_2층_A구역
+    const params = {
+        siteCd: schSiteCd.value,
+        nodeUpId: '0'
+    };
+    await fetchTreeList(params);
+};
+
+function confirmDeleteDataNode() {
+    deltDialog.value = true;
+}
+
+function deltObjDataNode() {
+    deltNode(objDataNode);
+    deltDialog.value = false;
+    objDataNode.value = {};
+    toast.add({ severity: 'success', summary: 'Successful', detail: 'Data Deleted', life: 3000 });
+}
+
+//삭제
+const deltNode = async (payload) => {
+    console.log('delt');
+    await axios.delete('/std/node/delt', { data: payload });
+
+    objDataTree.value = objDataTree.value.filter((val) => val.key !== objDataNode.rowKey);
+    objDataNode.value = {}; // ✅ null 대신 빈 배열로 초기화
+
+    // 프론트에서 노드 삭제
+    const key = Object.keys(selectedKeys.value)[0];
+    removeNode(objDataTree.value, key);
+    // 선택 해제
+    selectedKeys.value = {};
+
+    const params = {
+        siteCd: schSiteCd.value,
+        nodeUpId: '0'
+    };
+    //await fetchTreeList(params);
+};
+
+const removeNode = (nodes, keyToDelete) => {
+    for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+
+        // 현재 레벨에서 삭제
+        if (node.key === keyToDelete) {
+            nodes.splice(i, 1);
+            return true;
+        }
+
+        // 자식 레벨 탐색
+        if (node.children && node.children.length > 0) {
+            const removed = removeNode(node.children, keyToDelete);
+
+            // 자식에서 삭제 성공한 경우
+            if (removed) {
+                // 자식이 모두 삭제되면 children 제거
+                if (node.children.length === 0) {
+                    delete node.children;
+                }
+                return true;
+            }
+        }
+    }
+    return false;
+};
+
+const menu = ref();
+const items = ref([
+    {
+        label: 'Favorite',
+        icon: 'pi pi-star',
+        shortcut: '⌘+D'
+    },
+    {
+        label: 'Add',
+        icon: 'pi pi-shopping-cart',
+        shortcut: '⌘+A'
+    },
+    {
+        separator: true
+    },
+    {
+        label: 'Share',
+        icon: 'pi pi-share-alt',
+        items: [
+            {
+                label: 'Whatsapp',
+                icon: 'pi pi-whatsapp',
+                badge: 2
+            },
+            {
+                label: 'Instagram',
+                icon: 'pi pi-instagram',
+                badge: 3
+            }
+        ]
+    }
+]);
+const selectedId = ref(null);
+const onRightClick = (event, id) => {
+    selectedId.value = id;
+    menu.value.show(event);
+};
+</script>
+
+<template>
+    <div class="flex flex-col overflow-hidden">
+        <div class="flex-1 p-0 m-0 overflow-auto">
+            <Toolbar class="mb-2">
+                <template #start>
+                    <CodeCombo id="schSiteCd" ref="schSiteCdRef" v-model="schSiteCd" type="select" :params="{ tableNm: 'StdSite' }" label-key="name" value-key="value" placeholder="All" class="mr-2" :autoSelectFirst="true" />
+                </template>
+                <template #end>
+                    <Button type="button" icon="pi pi-filter-slash" label="Clear" outlined @click="clearFilter()" class="mr-2" />
+                    <Button label="Export" icon="pi pi-upload" severity="secondary" @click="exportCSV($event)" />
+                </template>
+            </Toolbar>
+            <Splitter class="h-full flex mb-8 min-h-[730px]">
+                <SplitterPanel :size="20" :minSize="20">
+                    <div class="flex flex-wrap gap-2 mt-4 ml-3 mb-0 mr-0 w-full">
+                        <Button type="button" icon="pi pi-plus" outlined label="Expand Lvl(5)" @click="expandAllTree(expandedKeys)" />
+                        <Button type="button" icon="pi pi-minus" severity="secondary" outlined label="Collapse All" @click="collapseAllTree" />
+                    </div>
+                    <Tree
+                        v-model:selectionKeys="selectedKeys"
+                        :expandedKeys="expandedKeys"
+                        :value="objDataTree"
+                        selectionMode="single"
+                        :metaKeySelection="checked"
+                        :filter="true"
+                        filterMode="strict"
+                        :loading="loading"
+                        @contextmenu="onRightClick($event, objDataTree.rowKey)"
+                        class="w-full"
+                    ></Tree>
+                </SplitterPanel>
+                <SplitterPanel :size="80">
+                    <!-- <div v-if="selectedKey"> -->
+                    <Fluid class="flex flex-col md:flex-row">
+                        <div class="md:w-2/5">
+                            <div class="card flex flex-col gap-6 p-4 m-0 shadow-sm rounded-lg">
+                                <div class="flex items-center grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="siteCd" class="block font-bold mb-3">사이트</label>
+                                        <CodeCombo
+                                            id="siteCd"
+                                            ref="siteCdRef"
+                                            v-model="objDataNode.siteCd"
+                                            type="select"
+                                            :params="{ tableNm: 'StdSite' }"
+                                            label-key="name"
+                                            value-key="value"
+                                            placeholder="Choice"
+                                            class="w-full mr-2"
+                                            required="true"
+                                            autofocus
+                                            :invalid="submitted && !objDataNode.siteCd"
+                                            :autoSelectFirst="true"
+                                            :disabled="isEditMode"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label for="nodeId" class="block font-bold mb-3">노드ID</label>
+                                        <InputText type="text" placeholder="노드ID" v-model="objDataNode.nodeId" :disabled="true" />
+                                    </div>
+                                </div>
+                                <div class="flex items-center grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="nodeNm" class="block font-bold mb-3">노드명</label>
+                                        <InputText type="text" placeholder="노드명" v-model="objDataNode.nodeNm" :invalid="submitted && !objDataNode.nodeNm" />
+                                    </div>
+                                    <div>
+                                        <label for="nodeKind" class="block font-bold mb-3">노드종류</label>
+                                        <CodeCombo
+                                            id="nodeKind"
+                                            ref="nodeKindRef"
+                                            v-model="objDataNode.nodeKind"
+                                            type="select"
+                                            :params="{ paramOne: 'NODE_KIND' }"
+                                            label-key="name"
+                                            value-key="value"
+                                            placeholder="Select"
+                                            class="mr-2"
+                                            :autoSelectFirst="true"
+                                            :invalid="submitted && !objDataNode.nodeKind"
+                                        />
+                                    </div>
+                                </div>
+                                <div class="flex items-center grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="nodeCls" class="block font-bold mb-3">노드구분</label>
+                                        <CodeCombo
+                                            id="nodeCls"
+                                            ref="nodeClsRef"
+                                            v-model="objDataNode.nodeCls"
+                                            type="select"
+                                            :params="{ paramOne: 'NODE_CLS' }"
+                                            label-key="name"
+                                            value-key="value"
+                                            placeholder="Select"
+                                            class="mr-2"
+                                            :autoSelectFirst="true"
+                                            :invalid="submitted && !objDataNode.nodeCls"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label for="nodeTy" class="block font-bold mb-3">노드유형</label>
+                                        <CodeCombo
+                                            id="nodeTy"
+                                            ref="nodeClsRef"
+                                            v-model="objDataNode.nodeTy"
+                                            type="select"
+                                            :params="{ paramOne: 'NODE_TY' }"
+                                            label-key="name"
+                                            value-key="value"
+                                            placeholder="Select"
+                                            class="mr-2"
+                                            :autoSelectFirst="true"
+                                            :invalid="submitted && !objDataNode.nodeTy"
+                                        />
+                                    </div>
+                                </div>
+                                <div class="flex items-center grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="nodeUpId" class="block font-bold mb-3">상위노드ID</label>
+                                        <IconField iconPosition="left">
+                                            <InputText v-keyfilter.num placeholder="상위노드ID" v-model="objDataNode.nodeUpId" />
+                                            <InputIcon class="pi pi-search cursor-pointer" @click="openTree" />
+                                        </IconField>
+                                    </div>
+                                    <div>
+                                        <label for="nodeLevl" class="block font-bold mb-3">노드레벨</label>
+                                        <InputText v-keyfilter.num placeholder="노드레벨" v-model="objDataNode.nodeLevl" :disabled="true" />
+                                    </div>
+                                </div>
+                                <div class="flex items-center grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="pfmcAnlsYn" class="block font-bold mb-3">성능분석여부</label>
+                                        <CodeCombo ref="pfmcAnlsYn" v-model="objDataNode.pfmcAnlsYn" type="radio" :params="{ paramOne: 'C0007' }" label-key="name" value-key="value" defaultValue="N" name="성능분석여부" :columns="2" :colspans="2" />
+                                    </div>
+                                    <div>
+                                        <label for="vrtlYn" class="block font-bold mb-3">가상여부</label>
+                                        <CodeCombo ref="vrtlYn" v-model="objDataNode.vrtlYn" type="radio" :params="{ paramOne: 'C0007' }" label-key="name" value-key="value" defaultValue="N" name="가상여부" :columns="2" :colspans="2" />
+                                    </div>
+                                </div>
+                                <div class="flex items-center grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="sortNo" class="block font-bold mb-3">정렬번호</label>
+                                        <InputText v-keyfilter.num placeholder="정렬번호" v-model="objDataNode.sortNo" />
+                                    </div>
+                                    <div>
+                                        <label for="delYn" class="block font-bold mb-3">삭제여부</label>
+                                        <CodeCombo ref="delYn" v-model="objDataNode.delYn" type="radio" :params="{ paramOne: 'C0007' }" label-key="name" value-key="value" defaultValue="N" name="삭제여부" :columns="2" :colspans="2" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="remk" class="block font-bold mb-3">비고</label>
+                                    <Textarea placeholder="Your Message" v-model="objDataNode.remk" :autoResize="true" rows="3" cols="30" />
+                                </div>
+                                <div class="flex items-center grid grid-cols-1 gap-4">
+                                    <!-- 버튼 -->
+                                    <div class="flex gap-2">
+                                        <Button label="Delete" icon="pi pi-trash" severity="danger" :disabled="hasChild" @click="confirmDeleteDataNode" />
+                                        <Button label="Save" icon="pi pi-check" iconPos="right" @click="saveObjDataNode" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="md:w-3/5">
+                            <div class="card flex flex-col gap-4 p-2 pb-8">
+                                <div class="font-semibold">파라미터 목록</div>
+                                <DataTable
+                                    ref="dt"
+                                    v-model:selection="selectedObjDataList"
+                                    :value="objDataList"
+                                    dataKey="rowKey"
+                                    :filters="filters"
+                                    :scrollHeight="'250px'"
+                                    class="custom-datatable"
+                                    style="height: 250px !important"
+                                    scrollable
+                                    :size="'small'"
+                                >
+                                    <template #header>
+                                        <div class="flex justify-between items-center w-full">
+                                            <!-- 왼쪽 버튼 그룹 -->
+                                            <div class="flex gap-2">
+                                                <Button label="New" icon="pi pi-plus" severity="secondary" @click="openAdd" :disabled="!isEditMode" />
+                                                <Button label="Delete" icon="pi pi-trash" severity="secondary" @click="confirmDeleteSelected" :disabled="!selectedObjDataList || !selectedObjDataList.length" />
+                                            </div>
+                                            <div>
+                                                <Paginator :totalRecords="totalRecords" template="CurrentPageReport" currentPageReportTemplate="Total : {totalRecords}" />
+                                            </div>
+                                            <!-- 오른쪽 버튼 그룹 -->
+                                            <div class="flex gap-2">
+                                                <InputText v-model="filters['global'].value" placeholder="Keyword Search" />
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <template #empty>
+                                        <div class="flex items-center justify-start h-[180px] w-full pt-0 pl-[250px]">데이터가 없습니다.</div>
+                                    </template>
+                                    <Column selectionMode="multiple" style="width: 3rem" :exportable="false"></Column>
+                                    <Column field="prmtNm" header="파라미터" sortable style="min-width: 20rem"></Column>
+                                    <Column field="prmtTyNm" header="파라미터유형" sortable style="min-width: 12rem"></Column>
+                                    <Column field="engyTyNm" header="에너지유형" sortable :headerStyle="{ textAlign: 'center' }" style="text-align: center; min-width: 12rem"></Column>
+                                    <Column field="dataPerdCdNm" header="주기" sortable style="min-width: 8rem"></Column>
+                                    <Column field="sumyTyNm" header="집계유형" sortable style="min-width: 8rem"></Column>
+                                    <Column field="valTyNm" header="값유형" sortable style="min-width: 8rem"></Column>
+                                    <Column field="unitCdNm" header="단위" sortable style="min-width: 8rem"></Column>
+                                    <Column field="alamYn" header="알람" sortable style="min-width: 8rem"></Column>
+                                    <Column field="acmlYn" header="적산" sortable style="min-width: 8rem"></Column>
+                                    <Column field="vrtlYn" header="가상" sortable style="min-width: 8rem"></Column>
+                                    <Column field="vsblYn" header="표시" sortable style="min-width: 8rem"></Column>
+                                </DataTable>
+                            </div>
+                            <div class="card flex flex-col gap-4 p-2 pt-4">설비</div>
+                        </div>
+                    </Fluid>
+
+                    <!-- </div>
+                    <div v-else class="p-4 text-gray-500">선택된 노드가 없습니다.</div> -->
+                </SplitterPanel>
+            </Splitter>
+
+            <Dialog v-model:visible="prmtDialog" :style="{ width: '800px' }" header="Prmt List" :modal="true">
+                <div class="flex flex-col gap-6">
+                    <DataTable
+                        ref="dt"
+                        v-model:selection="selectedObjDataListByNotNode"
+                        :value="objDataListByNotNode"
+                        dataKey="rowKey"
+                        :paginator="true"
+                        :rows="10"
+                        :filters="filtersAddPrmt"
+                        :scrollHeight="'500px'"
+                        style="min-height: 500px"
+                        scrollable
+                        :size="'small'"
+                        class="custom-datatable"
+                        paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink CurrentPageReport RowsPerPageDropdown"
+                        :rowsPerPageOptions="[5, 10, 25]"
+                        currentPageReportTemplate="{first} to {last} of {totalRecords}"
+                    >
+                        <template #header>
+                            <div class="flex justify-between items-center w-full">
+                                <!-- 왼쪽 버튼 그룹 -->
+                                <div class="flex gap-2"></div>
+
+                                <!-- 오른쪽 버튼 그룹 -->
+                                <div class="flex gap-2">
+                                    <InputText v-model="filtersAddPrmt['global'].value" placeholder="Keyword Search" />
+                                </div>
+                            </div>
+                        </template>
+                        <template #empty>
+                            <div class="flex items-center justify-start h-[135px] pt-0 pl-[250px]">데이터가 없습니다.</div>
+                            <!-- <div class="flex items-center justify-center h-[135px] bg-surface-50 w-full">데이터가 없습니다.</div> -->
+                        </template>
+                        <Column selectionMode="multiple" style="width: 3rem" :exportable="false"></Column>
+                        <Column field="prmtNm" header="파라미터" sortable style="min-width: 20rem"></Column>
+                        <Column field="prmtTyNm" header="파라미터유형" sortable style="min-width: 12rem"></Column>
+                        <Column field="engyTyNm" header="에너지유형" sortable :headerStyle="{ textAlign: 'center' }" style="text-align: center; min-width: 12rem"></Column>
+                        <Column field="dataPerdCdNm" header="주기" sortable style="min-width: 8rem"></Column>
+                        <Column field="sumyTyNm" header="집계유형" sortable style="min-width: 8rem"></Column>
+                        <Column field="valTyNm" header="값유형" sortable style="min-width: 8rem"></Column>
+                        <Column field="unitCdNm" header="단위" sortable style="min-width: 8rem"></Column>
+                        <Column field="alamYn" header="알람" sortable style="min-width: 8rem"></Column>
+                        <Column field="acmlYn" header="적산" sortable style="min-width: 8rem"></Column>
+                        <Column field="vrtlYn" header="가상" sortable style="min-width: 8rem"></Column>
+                        <Column field="vsblYn" header="표시" sortable style="min-width: 8rem"></Column>
+                    </DataTable>
+                </div>
+
+                <template #footer>
+                    <Button label="Cancel" icon="pi pi-times" text @click="hidePrmtAddDialog" />
+                    <Button label="Save" icon="pi pi-check" @click="chkAddPrmtDataList" :disabled="!selectedObjDataListByNotNode || !selectedObjDataListByNotNode.length" />
+                </template>
+            </Dialog>
+
+            <Dialog v-model:visible="chkDeltDialog" :style="{ width: '450px' }" header="Confirm" :modal="true">
+                <div class="flex items-center gap-4">
+                    <i class="pi pi-exclamation-triangle !text-3xl" />
+                    <span v-if="selectedObjDataList">Are you sure you want to delete the selected Data?</span>
+                </div>
+                <template #footer>
+                    <Button label="No" icon="pi pi-times" text @click="chkDeltDialog = false" />
+                    <Button label="Yes" icon="pi pi-check" text @click="chkDeltObjDataList" />
+                </template>
+            </Dialog>
+            <Dialog v-model:visible="treeDialog" :style="{ width: '400px', height: '600px' }" header="Node Tree" :modal="true">
+                <div class="flex flex-wrap gap-2 mt-4 ml-3 mb-0 mr-2">
+                    <Button type="button" icon="pi pi-plus" outlined label="Expand Lvl(5)" @click="expandAllUpTree" />
+                    <Button type="button" icon="pi pi-minus" severity="secondary" outlined label="Collapse All" @click="collapseAllUpTree" />
+                </div>
+                <Tree v-model:selectionKeys="selectedUpKeys" :expandedKeys="expandedUpKeys" :value="objDataUpTree" selectionMode="single" :metaKeySelection="checked" :filter="true" filterMode="strict" class="w-full"></Tree>
+
+                <template #footer>
+                    <Button label="Close" icon="pi pi-times" @click="hideTreeDialog" />
+                    <Button label="Confirm" icon="pi pi-check" @click="confirmUpNode" />
+                </template>
+            </Dialog>
+
+            <Dialog v-model:visible="deltDialog" :style="{ width: '450px' }" header="Confirm" :modal="true">
+                <div class="flex items-center gap-4">
+                    <i class="pi pi-exclamation-triangle !text-3xl" />
+                    <span v-if="objDataNode"
+                        >Are you sure you want to delete <b>{{ objDataNode.nodeNm }}</b
+                        >?</span
+                    >
+                </div>
+                <template #footer>
+                    <Button label="No" icon="pi pi-times" text @click="deltDialog = false" />
+                    <Button label="Yes" icon="pi pi-check" @click="deltObjDataNode" />
+                </template>
+            </Dialog>
+
+            <ContextMenu ref="menu" :model="items" @hide="selectedId = null">
+                <template #item="{ item, props }">
+                    <a v-ripple class="flex items-center" v-bind="props.action">
+                        <span :class="item.icon" />
+                        <span class="ml-2">{{ item.label }}</span>
+                        <Badge v-if="item.badge" class="ml-auto" :value="item.badge" />
+                        <span v-if="item.shortcut" class="ml-auto border border-surface rounded bg-emphasis text-muted-color text-xs p-1">{{ item.shortcut }}</span>
+                        <i v-if="item.items" class="pi pi-angle-right ml-auto"></i>
+                    </a>
+                </template>
+            </ContextMenu>
+        </div>
+    </div>
+</template>
+<style scoped>
+/* DataTable 스크롤 영역 최소 높이 강제 */
+.p-datatable-table-container {
+    height: 250px !important;
+    overflow: 'auto' !important;
+}
+
+.custom-datatable .p-datatable-table-container {
+    overflow: auto !important;
+    height: 250px !important;
+    max-height: 250px !important;
+}
+</style>
